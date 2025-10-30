@@ -14,7 +14,15 @@ def generate_options_keyboard(answer_options: list[str] , query_index: int):
     builder.adjust(1)
     return builder.as_markup()
 
+# def statistics(amount: int):
+#     builder = ReplyKeyboardBuilder()
+#     builder.add(types.KeyboardButton(text="Начать игру"))
+#     builder.add(types.KeyboardButton(text="Статистика"))
+#     stats_text = f"Ваш последний результат: {amount} из 10"
+#     return stats_text, builder.as_markup(resize_keyboard=True)
+
 def start():    
     builder = ReplyKeyboardBuilder()
     builder.add(types.KeyboardButton(text="Начать игру"))
+    builder.add(types.KeyboardButton(text="Статистика"))
     return builder.as_markup(resize_keyboard=True)

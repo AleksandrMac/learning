@@ -1,5 +1,6 @@
 from aiogram import Dispatcher, types, F
 from aiogram.filters.command import Command
+import asyncio
 
 import ui
 import usecase
@@ -13,6 +14,7 @@ def dispatcher(uc: usecase.QuizUseCase):
     async def send_next_question_or_finish(user_id: int, message: types.Message, question_id = -1):
         quest, opts, correct, question_id = await uc.get_question(user_id, question_id)
         if quest is None:
+            await uc.update_statistic(user_id, uc.amount)
             return await message.answer("Это был последний вопрос. Квиз завершен!")
         kb = ui.generate_options_keyboard(opts, question_id)
         return await message.answer(quest, reply_markup=kb)
@@ -23,6 +25,7 @@ def dispatcher(uc: usecase.QuizUseCase):
 
         if uc.check_answer(int(q_index), int(selected_option)):
             await callback.message.answer("Верно!")
+            uc.amount_add(1)
         else:
             # Получаем текущий вопрос (до увеличения индекса!)
             _, opts, correct_idx, _ = await uc.get_question(user_id)
@@ -49,6 +52,16 @@ def dispatcher(uc: usecase.QuizUseCase):
         await message.answer(f"Давайте начнем квиз!")
         await uc.new_quiz(user_id)        
         await send_next_question_or_finish(user_id, message, 0)
+
+        # Хэндлер на команду /quiz
+    @dp.message(F.text=="Статистика")
+    @dp.message(Command("statistic"))
+    async def cmd_statistic(message: types.Message):
+        user_id = message.from_user.id
+        amount = await uc.get_statistic(user_id)
+        stats_text = f"Ваш последний результат: {amount} из 10"
+        await message.answer(stats_text)
+
 
     @dp.callback_query(F.data.startswith("opt:"))
     async def handle_quiz_answer(callback: types.CallbackQuery):
