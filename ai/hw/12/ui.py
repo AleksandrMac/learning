@@ -2,13 +2,13 @@
 from aiogram import types
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 
-def generate_options_keyboard(answer_options: list[str] , right_answer: str):
+def generate_options_keyboard(answer_options: list[str] , query_index: int):
     builder = InlineKeyboardBuilder()   
 
-    for option in answer_options:
+    for key, option in enumerate(answer_options):
         builder.add(types.InlineKeyboardButton(
             text=option,
-            callback_data="right_answer" if option == right_answer else "wrong_answer")
+            callback_data= f"opt:{query_index}:{key}")
         )
 
     builder.adjust(1)

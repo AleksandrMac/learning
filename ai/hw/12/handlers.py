@@ -11,21 +11,28 @@ def dispatcher(uc: usecase.QuizUseCase):
     dp = Dispatcher()
     
     async def send_next_question_or_finish(user_id: int, message: types.Message, question_id = -1):
-        quest, opts, correct = await uc.get_question(user_id, question_id)
+        quest, opts, correct, question_id = await uc.get_question(user_id, question_id)
         if quest is None:
             return await message.answer("Это был последний вопрос. Квиз завершен!")
-        kb = ui.generate_options_keyboard(opts, opts[correct])
+        kb = ui.generate_options_keyboard(opts, question_id)
         return await message.answer(quest, reply_markup=kb)
     
     async def check_answer(user_id: int, callback: types.CallbackQuery):
-        is_correct = callback.data == "right_answer"
+        data = callback.data
+        _, q_index, selected_option = data.split(":")
 
-        if is_correct:
+        if uc.check_answer(int(q_index), int(selected_option)):
             await callback.message.answer("Верно!")
         else:
             # Получаем текущий вопрос (до увеличения индекса!)
-            _, opts, correct_idx = await uc.get_question(user_id)
+            _, opts, correct_idx, _ = await uc.get_question(user_id)
             await callback.message.answer(f"Неправильно. Правильный ответ: {opts[correct_idx]}")
+
+    async def print_answer(callback: types.CallbackQuery):
+        data = callback.data
+        _, q_index, selected_option = data.split(":")
+        option_text = uc.getOptionsById(int(q_index), int(selected_option))
+        return await callback.message.answer(f"Ваш ответ: {option_text}")
 
     # Хэндлер на команду /start
     @dp.message(Command("start"))
@@ -43,7 +50,7 @@ def dispatcher(uc: usecase.QuizUseCase):
         await uc.new_quiz(user_id)        
         await send_next_question_or_finish(user_id, message, 0)
 
-    @dp.callback_query(F.data.in_({"right_answer", "wrong_answer"}))
+    @dp.callback_query(F.data.startswith("opt:"))
     async def handle_quiz_answer(callback: types.CallbackQuery):
 
         user_id     = callback.from_user.id
@@ -56,7 +63,8 @@ def dispatcher(uc: usecase.QuizUseCase):
             reply_markup    = None
         )
 
-        await check_answer(user_id, callback)
+        await check_answer(user_id, callback)        
+        await print_answer(callback)
 
         # Переходим к следующему вопросу
         await uc.quiz_index_add(user_id)
