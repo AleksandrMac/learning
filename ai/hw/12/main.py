@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from aiogram import Bot
 
 from dotenv import load_dotenv
 import os
@@ -13,16 +14,10 @@ load_dotenv()  # This loads variables from .env into os.environ
 
 # необходимо создать файл .env
 API_TOKEN = os.getenv("API_KEY")
+DB_NAME = 'quiz_bot.db'
 
 # Включаем логирование, чтобы не пропустить важные сообщения
 logging.basicConfig(level=logging.INFO)
-
-
-# Зададим имя базы данных
-DB_NAME = 'quiz_bot.db'
-
-
-
 
 # Запуск процесса поллинга новых апдейтов
 async def main():
@@ -32,6 +27,8 @@ async def main():
 
     db = repo.QuizRepo(DB_NAME)
     uc = usecase.QuizUseCase(db)
+    # Объект бота
+    bot = Bot(token=API_TOKEN)
     await dispatcher(uc).start_polling(bot)
 
 if __name__ == "__main__":
