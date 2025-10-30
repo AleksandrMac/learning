@@ -1,0 +1,20 @@
+# docker-compose.yml
+version: '3.8'
+
+services:
+  ydb-local:
+    image: ydbplatform/local-ydb:latest
+    container_name: ydb-local
+    hostname: localhost
+    environment:
+      - GRPC_PORT=2136
+      - MON_PORT=8765
+    ports:
+      - "2136:2136"   # GRPC
+      - "8765:8765"   # HTTP (для веб-интерфейса и REST)
+    volumes:
+      - ydb_data:/ydb_data
+    restart: unless-stopped
+
+volumes:
+  ydb_data:
