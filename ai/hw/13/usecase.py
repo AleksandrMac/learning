@@ -1,13 +1,15 @@
 import repo
-import question
 
 class QuizUseCase:    
     def __init__(self, db: repo.QuizRepo):        
-        self.db = db
-        self.dataset = question.quiz_data
-        self.amount = 0
+        self.db         = db
+        self.dataset    = None
+        self.amount     = 0
 
     async def get_question(self, user_id, question_id=-1):
+        if self.dataset is None:
+            self.dataset = await self.db.get_question()
+
         # Получение текущего вопроса из словаря состояний пользователя
         if question_id == -1:
             question_id = await self.db.get_quiz_index(user_id)

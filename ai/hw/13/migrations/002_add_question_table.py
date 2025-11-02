@@ -1,6 +1,6 @@
 DESCRIPTION = "Создание таблицы вопросов"
 
-def up(driver):
+def up(session):
     query = """
     CREATE TABLE IF NOT EXISTS questions (
         question_id Uint64,
@@ -8,4 +8,4 @@ def up(driver):
         PRIMARY KEY (question_id)
     );
     """
-    driver.execute_scheme(query)
+    session.execute_scheme(query)

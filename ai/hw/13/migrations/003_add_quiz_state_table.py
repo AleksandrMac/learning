@@ -1,6 +1,6 @@
 DESCRIPTION = "Создание таблицы состояния квиза"
 
-def up(driver):
+def up(session):
     query = """
     CREATE TABLE IF NOT EXISTS quiz_state (
         user_id Uint64, 
@@ -9,4 +9,4 @@ def up(driver):
         PRIMARY KEY (`user_id`)
     );
     """
-    driver.execute_scheme(query)
+    session.execute_scheme(query)

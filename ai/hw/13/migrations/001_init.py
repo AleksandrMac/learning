@@ -1,6 +1,6 @@
 DESCRIPTION = "Создание таблицы schema_version"
 
-def up(driver):
+def up(session):
     query = """
     CREATE TABLE IF NOT EXISTS schema_version (
         version Uint64,
@@ -9,4 +9,4 @@ def up(driver):
         PRIMARY KEY (version)
     );
     """
-    driver.execute_scheme(query)
+    session.execute_scheme(query)

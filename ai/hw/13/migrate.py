@@ -7,14 +7,14 @@ from dotenv import load_dotenv
 MIGRATIONS_DIR = "migrations"
 SCHEMA_VERSION_TABLE = "schema_version"
 
-def get_applied_versions(session):
+def get_applied_versions(session: ydb.table.Session):
     query = f"SELECT version FROM `{SCHEMA_VERSION_TABLE}` ORDER BY version"
     result = session.transaction().execute(query, commit_tx=True)
     return {row.version for row in result[0].rows}
 
-def apply_migration(session, version: int, module, description: str):
+def apply_migration(session: ydb.table.Session, version: int, module, description: str):
     print(f"Применяется миграция {version:03d}: {description}")
-    module.up(session.driver)
+    module.up(session)
     
     # Записываем в таблицу версий
     query = f"""
@@ -24,10 +24,7 @@ def apply_migration(session, version: int, module, description: str):
     session.transaction().execute(query, commit_tx=True)
     print(f"Миграция {version:03d} успешно применена.")
 
-def run_migrations(endpoint: str, database: str):
-
-
-
+def run_migrations(endpoint: str, database: str):    
     driver_config = ydb.DriverConfig(
         endpoint, database,
         # credentials=ydb.credentials_from_env_variables(),

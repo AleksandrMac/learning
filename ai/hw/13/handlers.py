@@ -1,15 +1,17 @@
-from aiogram import Dispatcher, types, F
+from aiogram import types, F, Router
 from aiogram.filters.command import Command
-import asyncio
+from dotenv import load_dotenv
 
 import ui
 import usecase
+import os
 
+load_dotenv()
+START_IMAGE_URL = os.getenv("START_IMAGE_URL")
 
-
-def dispatcher(uc: usecase.QuizUseCase):
-    # Диспетчер
-    dp = Dispatcher()
+def router(uc: usecase.QuizUseCase):
+    # Роутер
+    router = Router()
     
     async def send_next_question_or_finish(user_id: int, message: types.Message, question_id = -1):
         quest, opts, correct, question_id = await uc.get_question(user_id, question_id)
@@ -38,13 +40,17 @@ def dispatcher(uc: usecase.QuizUseCase):
         return await callback.message.answer(f"Ваш ответ: {option_text}")
 
     # Хэндлер на команду /start
-    @dp.message(Command("start"))
-    async def cmd_start(message: types.Message):
-        await message.answer("Добро пожаловать в квиз!", reply_markup=ui.start())
+    @router.message(Command("start"))
+    async def cmd_start(message: types.Message):        
+        await message.answer_photo(
+            photo=START_IMAGE_URL, 
+            caption="Добро пожаловать в квиз!", 
+            reply_markup=ui.start(),
+        )
     
     # Хэндлер на команду /quiz
-    @dp.message(F.text=="Начать игру")
-    @dp.message(Command("quiz"))
+    @router.message(F.text=="Начать игру")
+    @router.message(Command("quiz"))
     async def cmd_quiz(message: types.Message):
 
         user_id = message.from_user.id
@@ -54,8 +60,8 @@ def dispatcher(uc: usecase.QuizUseCase):
         await send_next_question_or_finish(user_id, message, 0)
 
         # Хэндлер на команду /quiz
-    @dp.message(F.text=="Статистика")
-    @dp.message(Command("statistic"))
+    @router.message(F.text=="Статистика")
+    @router.message(Command("statistic"))
     async def cmd_statistic(message: types.Message):
         user_id = message.from_user.id
         amount = await uc.get_statistic(user_id)
@@ -63,7 +69,7 @@ def dispatcher(uc: usecase.QuizUseCase):
         await message.answer(stats_text)
 
 
-    @dp.callback_query(F.data.startswith("opt:"))
+    @router.callback_query(F.data.startswith("opt:"))
     async def handle_quiz_answer(callback: types.CallbackQuery):
 
         user_id     = callback.from_user.id
@@ -83,6 +89,6 @@ def dispatcher(uc: usecase.QuizUseCase):
         await uc.quiz_index_add(user_id)
         await send_next_question_or_finish(user_id, callback.message)
 
-    return dp
+    return router
 
 
