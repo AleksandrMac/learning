@@ -1,15 +1,70 @@
 # 📦 Скрипт: Парсинг нормативных документов в Graph-Ready JSON
 import re
+from dataclasses import dataclass, asdict
 import json
-import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from markdown_it import MarkdownIt
+from enum import Enum
+
+# 🔹 1. Структура узла графа знаний
+@dataclass
+class NormativeNode:
+    id: str
+    type: str  # order, appendix, section, clause, amendment_order, form
+    parent_id: Optional[str] = None
+    valid_from: str = "2000-01-01"
+    valid_to: Optional[str] = None
+    source_file: Optional[str] = None
+    title: Optional[str] = None
+    heading: Optional[str] = None
+    text: Optional[str] = None
+    clause_num: Optional[str] = None
+    change_status: Optional[str] = None
+    change_type: Optional[str] = None
+    amends_clause: Optional[str] = None
+    formulas: Optional[List[str]] = None
+    structure: Optional[Dict[str, Any]] = None
+    meta: Optional[Dict[str, Any]] = None
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Экспорт в dict для JSON-сериализации (фильтрует None)"""
+        return {k: v for k, v in asdict(self).items() if v is not None}
+
+@dataclass
+class Department:
+    name: str = None
+    fullname: str = None
+
+@dataclass
+class Signer:
+    position: str = None
+    shortname: str = None
+    
+@dataclass
+class Registration:
+    department: Department
+    number: int
+    date: date
+
+@dataclass
+class DocumentSet:
+    id: str
+    domain: str
+    base_order: Optional[str] = None
+    latest_amendment: Optional[str] = None
+    last_updated: Optional[date] = None
+    publisher: Optional[Department] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Экспорт в dict для JSON-сериализации (фильтрует None)"""
+        return {k: v for k, v in asdict(self).items() if v is not None}
 
 class NormativeGraphBuilder:
     def __init__(self):
-        self.nodes: List[Dict[str, Any]] = []
-        self.doc_id_map: Dict[str, str] = {}  # filename -> node_id
+        self.nodes: List[Dict[str, NormativeNode]] = []
+        self.doc: DocumentSet = {}
 
     def _clean_id(self, text: str) -> str:
         """Безопасный ID для графа: только буквы, цифры, _"""
@@ -18,7 +73,7 @@ class NormativeGraphBuilder:
     def _parse_date(self, d: str) -> Optional[str]:
         """DD.MM.YYYY -> YYYY-MM-DD"""
         try:
-            return datetime.datetime.strptime(d.strip(), "%d.%m.%Y").strftime("%Y-%m-%d")
+            return date.strptime(d.strip(), "%d.%m.%Y").strftime("%Y-%m-%d")
         except:
             return None
 
@@ -36,48 +91,136 @@ class NormativeGraphBuilder:
             if k not in node and v is not None:
                 node[k] = v
         if not node["id"]:
-            node["id"] = self._clean_id(node.get("title", node.get("heading", "unknown"))) + f"_{datetime.datetime.now().timestamp()}"
+            node["id"] = self._clean_id(node.get("title", node.get("heading", "unknown"))) + f"_{date.now().timestamp()}"
         self.nodes.append(node)
         return node["id"]
 
-    def parse_order(self, content: str, filename: str) -> str:
+    def parse_filename(self, filename: str):# -> tuple[str, str, str] : 
+        """
+        Безопасно парсит имя файла нормативного документа и извлекает метаданные.
+        
+        Ожидаемый формат: {ведомство}_{дата}_{тип}_{номер}_{содержание?}.md
+        Примеры:
+        - minstroy_20200804_pr_421_data.md
+        - minstroy_20220707_pr_557-421_add-1.md
+        - minstroy_20200804_pr_421.md (сам приказ без суффикса)
+
+        Возвращает order_id и тип содержимого, ошибку в случае провала
+        """
+
+        # 1. Нормализация имени
+        clean_name = Path(filename).name.strip()
+        if clean_name.lower().endswith(".md"):
+            clean_name = clean_name[:-3]
+            
+        parts = [p for p in clean_name.split("_") if p]  # фильтруем пустые из двойных __
+    
+        if len(parts) < 4:
+            return  ("", "", f"Недостаточно сегментов: ожидалось >=4, получено {len(parts)}, filename: {filename}")
+        
+        # 2. Базовое извлечение
+        self.department = parts[0].lower()
+        self.date_raw = parts[1]
+        self.doc_type = parts[2].lower()
+        self.number_raw = parts[3]
+        self.data_type = parts[4].lower() if len(parts) > 4 else ""
+
+        # id =  str.join("_", [department, date_raw, doc_type, number_raw])
+        # return (id, content_type, None)
+    
+    def _is_base_order(self) -> bool:
+        return self.number_raw.find("-") == -1
+    
+    def parse_content(self, content: str):
+        if self.data_type == "":
+            self.parse_order(content)
+        # if data_type == "data":
+        #     node.parse_data(content)
+        # if data_type == "add":
+        #     node.parse_add(content)
+        # if data_type.startswith("add-"):
+        #     node.parse_addplus(content)
+
+    def parse_order(self, content: str) -> str:
         """Парсит приказ (метаданные + текст приказа)"""
         lines = content.split('\n')
         meta = {}
-        text_lines = []
-        in_meta = False
+        desc_lines = []
+        data_lines = []
+
+        class Head(Enum):
+            Undefined = "undefined"
+            META = "meta"
+            DESC = "desc"
+            DATA = "data"
+
+        active_head = Head.Undefined
+        parent_id = str
         
         for line in lines:
             if line.strip().startswith('# Свойства'):
-                in_meta = True
+                active_head = Head.META
                 continue
-            if in_meta and line.strip() == 'Описание':
-                in_meta = False
+            if line.strip().startswith("# Описание"):
+                active_head = Head.DESC
                 continue
-            if in_meta:
-                # Разбор пар "ключ значение" или "ключ: значение"
-                m = re.match(r'^([^\s:]+)\s*[:\s]+(.*)', line)
-                if m:
-                    meta[m.group(1)] = m.group(2).strip()
+            if line.strip().startswith("# Содержание"):
+                active_head = Head.DATA
+                continue
+            if line.strip().startswith('#'):
+                active_head = Head.Undefined                
+                print("undefined_data: ", line)
+                continue
             else:
-                text_lines.append(line)
+                match active_head:
+                    case Head.META:
+                        # Разбор пар "ключ значение" или "ключ: значение"
+                        m = re.match(r'^([^\s:]+)\s*[:\s]+(.*)', line)
+                        if m:
+                            meta[m.group(1)] = m.group(2).strip()
+                    case Head.DESC:
+                        desc_lines.append(line)
+                    case Head.DATA:
+                        data_lines.append(line)
+                    case Head.Undefined:
+                        print("undefined_data: ", line)
 
-        doc_id = self._clean_id(meta.get("номер", filename))
-        self.doc_id_map[filename] = doc_id
+        department = Department(meta.get("ВедомствоСокращенно") ,meta.get("Ведомство"))
+        pub_num = meta.get("номерПубликации")
+        pub_date = datetime.strptime(meta.get("датаПубликации","01.01.2000") ,'%d.%m.%Y').date()
+        if self._is_base_order(): 
+            if self.doc.base_order == None:
+                self.doc.base_order = pub_num
+                self.doc.latest_amendment = pub_num
+                self.doc.publisher = department
+        else:
+            parent_number_raw = str.join("-", self.number_raw.split("-")[1:])
+            parent_id = str.join("_", [self.department, self.date_raw, self.doc_type, parent_number_raw])
+            if self.doc.last_updated is None or self.doc.last_updated < pub_date:
+                self.doc.latest_amendment = pub_num
+                self.doc.last_updated = pub_date
         
+        # self.doc_id_map[filename] = doc_id
+
+        doc_id = str.join("_", [self.department, self.date_raw, self.doc_type, self.number_raw])
         self._add_node(
             id=doc_id,
             type="order",
-            title=meta.get("Описание", meta.get("номер")),
             number=meta.get("номер"),
-            date=self._parse_date(meta.get("дата", "")),
-            reg_date=self._parse_date(meta.get("датаРегистрации", "")),
-            reg_number=meta.get("номерРегистрации"),
-            signer=meta.get("Подписант"),
-            content="\n".join(text_lines).strip()[:500],
-            source_file=filename,
-            valid_from=self._parse_date(meta.get("дата", "01.01.2000")) or "2000-01-01",
-            valid_to=None
+            city=meta.get("город"),
+            date=datetime.strptime(meta.get("дата","01.01.2000") ,'%d.%m.%Y').date(),            
+            publisher=department if self.department != department else None,
+            signer=Signer(meta.get("ПодписантДолжность"), meta.get("Подписант")),
+            status=meta.get("статус"),
+            registration=Registration(
+                department=Department(fullname=meta.get("ВедомствоРегистратор")),
+                number=meta.get("номерРегистрации"), 
+                date=datetime.strptime(meta.get("датаРегистрации","01.01.2000") ,'%d.%m.%Y').date()),
+            desription="\n".join(desc_lines),
+            data="\n".join(data_lines),
+            valid_from=datetime.strptime(meta.get("вступаетВДействиеС","01.01.2000") ,'%d.%m.%Y').date(),
+            valid_to=None,
+            parent_id=parent_id
         )
         return doc_id
 
@@ -177,22 +320,29 @@ class NormativeGraphBuilder:
             valid_from=valid_from, valid_to=None, source_file=filename
         )
 
-    def run(self, document_set_id: str, files_map: Dict[str, str]) -> Dict[str, Any]:
+    def run(self, document_set_id: str, domain: str, files_map: Dict[str, str]) -> Dict[str, Any]:
         """
         files_map: {"20200804_421.md": "content...", "20200804_421_data.md": "...", ...}
         Возвращает готовый JSON
         """
 
-        md = MarkdownIt()
-        for doc_name, content in files_map.items():            
-            tokens = md.parse(content)
-            
-            print(tokens)
-            for tok in tokens:
-                print(tok)
+        self.doc = DocumentSet(
+            id=document_set_id,
+            domain=domain
+        )
 
-
-        return {}
+        # md = MarkdownIt()
+        for doc_name, content in files_map.items():
+            self.parse_filename(doc_name)
+            self.parse_content(content)
+        return {
+            "metadata": self.doc.to_dict(),
+            "stats": {
+                "total_nodes": len(self.nodes),
+                "types": {k: sum(1 for n in self.nodes if n["type"]==k) for k in set(n["type"] for n in self.nodes)}
+            },
+            "nodes": self.nodes
+        }
 
 
 
@@ -240,8 +390,8 @@ if __name__ == "__main__":
     
     files_content = {}
     for fname in [
-        "minstroy_20220707_pr_421.md", 
-        "minstroy_20220707_pr_421_data.md",
+        "minstroy_20200804_pr_421.md", 
+        "minstroy_20200804_pr_421_data.md",
         "minstroy_20220707_pr_557-421.md",
         "minstroy_20220707_pr_557-421_add.md"]:
         with open(f"{Path.cwd()}/ai/practic/2/data/md/{fname}", "r", encoding="utf-8") as f:
@@ -257,7 +407,7 @@ if __name__ == "__main__":
     # }
 
     builder = NormativeGraphBuilder()
-    result_json = builder.run("metodika_421", files_content)
+    result_json = builder.run("metodika_421", "estimated", files_content)
     
     # Сохранение
     out_path = Path("data/json/metodika_421_graph.json")
@@ -267,4 +417,4 @@ if __name__ == "__main__":
         
     print(f"✅ JSON сохранён: {out_path}")
     print(f"📊 Статистика: {result_json['stats']}")
-    print(f"🔗 Пример узла (изменение):\n{json.dumps([n for n in result_json['nodes'] if n.get('change_type')][0], ensure_ascii=False, indent=2)}")
+    print(f"🔗 Пример узла (изменение):\n{json.dumps(next((n for n in result_json['nodes'] if n.get('change_type')), None), ensure_ascii=False, indent=2)}")
