@@ -92,6 +92,7 @@ class NormativeGraphBuilder:
     level_counters: List[int] = [0]*6
     data_lines: List[str] = []
     last_number: str | None = None
+    valid_froms: Dict[str, date] = {}
 
     def __init__(self):
         self.nodes: List[NormativeNode] = []
@@ -142,7 +143,8 @@ class NormativeGraphBuilder:
                 parent_id=self.section_levels[-2],
                 type="clause",
                 text='\n'.join(self.data_lines),
-                number=self.last_number
+                number=self.last_number,
+                valid_from=self.valid_froms[self.section_levels[0]]
             )
             self.nodes.append(node)
             self.data_lines.clear()
@@ -167,7 +169,8 @@ class NormativeGraphBuilder:
             id=id,
             parent_id=self.section_levels[-1],
             type="section",
-            text=text
+            text=text,
+            valid_from=self.valid_froms[self.section_levels[0]]
         )                
         self.nodes.append(node)
         self.section_levels.append(id)
@@ -300,6 +303,7 @@ class NormativeGraphBuilder:
 
         node.meta = { "city": meta.get("город") }
 
+        self.valid_froms[self._id()] = valid_from
         self.nodes.append(node)
 
     def parse_data(self, content: str):
@@ -491,4 +495,4 @@ if __name__ == "__main__":
         
     print(f"✅ JSON сохранён: {out_path}")
     print(f"📊 Статистика: {result.stats}")
-    print(f"🔗 Пример узла (изменение):\n{next((n.model_dump_json for n in result.nodes), None)}")
+    print(f"🔗 Пример узла (изменение):\n{next((n.model_dump_json() for n in result.nodes), None)}")
