@@ -1,55 +1,35 @@
 # 📦 Скрипт: Парсинг нормативных документов в Graph-Ready JSON
 import re
-from dataclasses import dataclass, asdict
-import json
+from pydantic import BaseModel
 from datetime import date, datetime
 from pathlib import Path
-from typing import List, Dict, Any, Optional
-from markdown_it import MarkdownIt
+from typing import List, Dict, Optional
 from enum import Enum
 
 # 🔹 1. Структура узла графа знаний
-@dataclass
-class NormativeNode:
-    id: str
-    type: str  # order, appendix, section, clause, amendment_order, form
-    parent_id: Optional[str] = None
-    valid_from: str = "2000-01-01"
-    valid_to: Optional[str] = None
-    source_file: Optional[str] = None
-    title: Optional[str] = None
-    heading: Optional[str] = None
-    text: Optional[str] = None
-    clause_num: Optional[str] = None
-    change_status: Optional[str] = None
-    change_type: Optional[str] = None
-    amends_clause: Optional[str] = None
-    formulas: Optional[List[str]] = None
-    structure: Optional[Dict[str, Any]] = None
-    meta: Optional[Dict[str, Any]] = None
-    
-    def to_dict(self) -> Dict[str, Any]:
-        """Экспорт в dict для JSON-сериализации (фильтрует None)"""
-        return {k: v for k, v in asdict(self).items() if v is not None}
-
-@dataclass
-class Department:
+class Department(BaseModel):
     name: str = None
     fullname: str = None
 
-@dataclass
-class Signer:
+    def __eq__(self, other: object) -> bool:
+        # Проверяем, что сравниваемый объект тоже является экземпляром Department
+        if not isinstance(other, Department):
+            return False
+        
+        # Сравниваем только нужные поля (или все через self.model_dump())
+        return self.name == other.name and self.fullname == other.fullname
+    
+class Signer(BaseModel):
     position: str = None
     shortname: str = None
     
-@dataclass
-class Registration:
+
+class Registration(BaseModel):
     department: Department
     number: int
-    date: date
+    registrated_at: date
 
-@dataclass
-class DocumentSet:
+class DocumentSet(BaseModel):
     id: str
     domain: str
     base_order: Optional[str] = None
@@ -57,43 +37,65 @@ class DocumentSet:
     last_updated: Optional[date] = None
     publisher: Optional[Department] = None
 
-    def to_dict(self) -> Dict[str, Any]:
-        """Экспорт в dict для JSON-сериализации (фильтрует None)"""
-        return {k: v for k, v in asdict(self).items() if v is not None}
+class NormativeNode(BaseModel):
+    id: str
+    type: str  # order, appendix, section, clause, amendment_order, form
+    number: str | None = None
+    parent_id: str | None = None
+    published_at: date | None = None
+    valid_from: date | None = None
+    signer: Signer | None = None
+    status: str | None = None
+    registration: Registration | None = None
+    valid_to: date | None = None
+    title: str | None = None
+    text: str | None = None
+    change_status: str  | None = None
+    change_type:    str | None = None
+    amends_clause: str  | None = None
+    meta: Dict[str, str] | None = None
+    publisher: Department | None = None
+
+class Result(BaseModel):
+    metadata: DocumentSet
+    stats: dict
+    nodes: List[NormativeNode]
+
+def NewOrderNode(id: str,
+                number: str,
+                parent_id: str,
+                title: str,
+                text: str,
+                published_at: date,
+                valid_from: date,
+                signer: Signer,
+                registration: Registration,
+                publisher: Department | None = None,
+                valid_to: date | None = None)-> NormativeNode:
+    return NormativeNode(
+        id = id,
+        type="order",
+        number = number,
+        parent_id = parent_id,
+        title = title,
+        text = text,
+        published_at = published_at,
+        valid_from = valid_from,
+        publisher = publisher,
+        registration = registration,
+        valid_to  = valid_to,
+        signer = signer,
+    )
 
 class NormativeGraphBuilder:
+    section_levels: List[str]
+    level_counters: List[int] = [0]*6
+    data_lines: List[str] = []
+    last_number: str | None = None
+
     def __init__(self):
-        self.nodes: List[Dict[str, NormativeNode]] = []
+        self.nodes: List[NormativeNode] = []
         self.doc: DocumentSet = {}
-
-    def _clean_id(self, text: str) -> str:
-        """Безопасный ID для графа: только буквы, цифры, _"""
-        return re.sub(r'[^a-zA-Zа-яА-Я0-9_]', '_', text.strip().lower())[:50]
-
-    def _parse_date(self, d: str) -> Optional[str]:
-        """DD.MM.YYYY -> YYYY-MM-DD"""
-        try:
-            return date.strptime(d.strip(), "%d.%m.%Y").strftime("%Y-%m-%d")
-        except:
-            return None
-
-    def _add_node(self, **kwargs) -> str:
-        node = {
-            "id": kwargs.get("id"),
-            "type": kwargs.get("type", "section"),
-            "parent_id": kwargs.get("parent_id"),
-            "valid_from": kwargs.get("valid_from"),
-            "valid_to": kwargs.get("valid_to"),
-            "source_file": kwargs.get("source_file"),
-        }
-        # Добавляем только непустые поля
-        for k, v in kwargs.items():
-            if k not in node and v is not None:
-                node[k] = v
-        if not node["id"]:
-            node["id"] = self._clean_id(node.get("title", node.get("heading", "unknown"))) + f"_{date.now().timestamp()}"
-        self.nodes.append(node)
-        return node["id"]
 
     def parse_filename(self, filename: str):# -> tuple[str, str, str] : 
         """
@@ -127,22 +129,93 @@ class NormativeGraphBuilder:
 
         # id =  str.join("_", [department, date_raw, doc_type, number_raw])
         # return (id, content_type, None)
-    
+    def _parse_date(self, s: str)-> date:
+        return datetime.strptime(s ,'%d.%m.%Y').date()
+
     def _is_base_order(self) -> bool:
         return self.number_raw.find("-") == -1
     
+    def _flush_clause(self)-> bool:
+        if self.data_lines:
+            node = NormativeNode(
+                id = self.section_levels[-1],
+                parent_id=self.section_levels[-2],
+                type="clause",
+                text='\n'.join(self.data_lines),
+                number=self.last_number
+            )
+            self.nodes.append(node)
+            self.data_lines.clear()
+            return True
+        return False
+
+    def addSection(self, head_level: int, text: str):
+        active_counters = sum(1 for x in self.level_counters if x)
+        if active_counters == head_level:
+            self.section_levels.pop()
+        elif active_counters > head_level:
+            while active_counters > head_level and len(self.section_levels):
+                self.level_counters[active_counters-1] = 0
+                self.section_levels.pop()
+                active_counters -= 1
+            self.section_levels.pop()
+        self.level_counters[head_level-1] += 1
+
+        parts = [self.section_levels[-1], str(self.level_counters[head_level-1])]
+        id = '_'.join(parts) if len(self.section_levels) == 1 else '.'.join(parts)
+        node = NormativeNode(
+            id=id,
+            parent_id=self.section_levels[-1],
+            type="section",
+            text=text
+        )                
+        self.nodes.append(node)
+        self.section_levels.append(id)
+    
+    def addClause(self, prefix:str, text:str):
+        if prefix.endswith(".") :
+            flushed = self._flush_clause()
+            if flushed:
+                mm = re.match(r'[а-яА-Я]', self.last_number)
+                if mm:
+                    self.section_levels.pop()
+                self.section_levels.pop()
+            self.last_number = prefix.removesuffix('.')
+            id = '.'.join([self.section_levels[-1], self.last_number])
+            self.section_levels.append(id)
+        elif prefix.endswith(')'):
+            flushed = self._flush_clause()
+            mm = re.match(r'[а-яА-Я]', self.last_number)
+            self.last_number = prefix.removesuffix(')')
+            if flushed and mm:
+                self.section_levels.pop()
+
+            id = '.'.join([self.section_levels[-1], self.last_number])                    
+            self.section_levels.append(id)        
+        self.data_lines.append(text)
+
     def parse_content(self, content: str):
         if self.data_type == "":
             self.parse_order(content)
-        # if data_type == "data":
-        #     node.parse_data(content)
-        # if data_type == "add":
-        #     node.parse_add(content)
+        if self.data_type == "data":
+            self.parse_data(content)
+        if self.data_type == "add":
+            self.parse_amendments(content)
         # if data_type.startswith("add-"):
         #     node.parse_addplus(content)
+    def _id(self) ->str :
+        return str.join("_", [self.doc_type, self.number_raw])
+    
+    def _parent_id(self) -> str :
+        parent_number_raw = str.join("-", self.number_raw.split("-")[1:])
+        return str.join("_", [self.doc_type, parent_number_raw])
+    
+    def _clause_id(self, num) -> str:
+        return "_".join([self._id, num])
 
-    def parse_order(self, content: str) -> str:
+    def parse_order(self, content: str):
         """Парсит приказ (метаданные + текст приказа)"""
+
         lines = content.split('\n')
         meta = {}
         desc_lines = []
@@ -155,9 +228,11 @@ class NormativeGraphBuilder:
             DATA = "data"
 
         active_head = Head.Undefined
-        parent_id = str
+        pid : str =None
         
         for line in lines:
+            if len(line) == 0:
+                continue
             if line.strip().startswith('# Свойства'):
                 active_head = Head.META
                 continue
@@ -175,9 +250,9 @@ class NormativeGraphBuilder:
                 match active_head:
                     case Head.META:
                         # Разбор пар "ключ значение" или "ключ: значение"
-                        m = re.match(r'^([^\s:]+)\s*[:\s]+(.*)', line)
+                        m = re.match(r'^(-\s\*{2})(.+)(\*{2}) +([а-яА-Я\d -\/]+$)', line)
                         if m:
-                            meta[m.group(1)] = m.group(2).strip()
+                            meta[m.group(2)] = m.group(4).strip()
                     case Head.DESC:
                         desc_lines.append(line)
                     case Head.DATA:
@@ -185,44 +260,95 @@ class NormativeGraphBuilder:
                     case Head.Undefined:
                         print("undefined_data: ", line)
 
-        department = Department(meta.get("ВедомствоСокращенно") ,meta.get("Ведомство"))
+        publisher = Department(
+            name=meta.get("ВедомствоСокращенно"), 
+            fullname=meta.get("Ведомство")
+            )
+        registrar = Department(
+            fullname=meta.get("ВедомствоРегистратор")
+        )
+        
         pub_num = meta.get("номерПубликации")
         pub_date = datetime.strptime(meta.get("датаПубликации","01.01.2000") ,'%d.%m.%Y').date()
         if self._is_base_order(): 
             if self.doc.base_order == None:
                 self.doc.base_order = pub_num
                 self.doc.latest_amendment = pub_num
-                self.doc.publisher = department
+                self.doc.publisher = publisher
         else:
-            parent_number_raw = str.join("-", self.number_raw.split("-")[1:])
-            parent_id = str.join("_", [self.department, self.date_raw, self.doc_type, parent_number_raw])
+            pid = self._parent_id()
             if self.doc.last_updated is None or self.doc.last_updated < pub_date:
                 self.doc.latest_amendment = pub_num
                 self.doc.last_updated = pub_date
-        
-        # self.doc_id_map[filename] = doc_id
 
-        doc_id = str.join("_", [self.department, self.date_raw, self.doc_type, self.number_raw])
-        self._add_node(
-            id=doc_id,
-            type="order",
-            number=meta.get("номер"),
-            city=meta.get("город"),
-            date=datetime.strptime(meta.get("дата","01.01.2000") ,'%d.%m.%Y').date(),            
-            publisher=department if self.department != department else None,
-            signer=Signer(meta.get("ПодписантДолжность"), meta.get("Подписант")),
-            status=meta.get("статус"),
-            registration=Registration(
-                department=Department(fullname=meta.get("ВедомствоРегистратор")),
-                number=meta.get("номерРегистрации"), 
-                date=datetime.strptime(meta.get("датаРегистрации","01.01.2000") ,'%d.%m.%Y').date()),
-            desription="\n".join(desc_lines),
-            data="\n".join(data_lines),
-            valid_from=datetime.strptime(meta.get("вступаетВДействиеС","01.01.2000") ,'%d.%m.%Y').date(),
-            valid_to=None,
-            parent_id=parent_id
+        published_at = self._parse_date(meta.get("дата","01.01.2000"))
+        valid_from =   self._parse_date(meta.get("вступаетВДействиеС","01.01.2000"))
+        desc = "\n".join(desc_lines)
+        text = "\n".join(data_lines)
+        n = meta.get("номер")
+        signer = Signer(position=meta.get("ПодписантДолжность"), shortname=meta.get("Подписант"))
+        registration = Registration(
+            department=Department(fullname=meta.get("ВедомствоРегистратор")),
+            number=meta.get("номерРегистрации"),
+            registrated_at=self._parse_date(meta.get("датаРегистрации","01.01.2000"))
         )
-        return doc_id
+        
+        node = NewOrderNode(self._id(), n, pid, desc, text, published_at, valid_from, signer, registration)
+        node.publisher = None if self.doc.publisher == publisher else publisher
+        if pid != None:
+            node.type = "amendment_order"
+
+        node.meta = { "city": meta.get("город") }
+
+        self.nodes.append(node)
+
+    def parse_data(self, content: str):
+        lines = content.split('\n')
+        self.data_lines=[]
+        self.section_levels = [self._id()]
+        self.last_number = None
+        self.level_counters = [0] * 6
+
+        for line in lines:
+            m = re.match(r'^(#{1,6}|\d+\.|[а-я]\)) (.+)', line)
+            if m is None:
+                self.data_lines.append(line.strip())
+                continue
+            prefix = m.group(1)
+            if prefix.startswith("#"):
+                self.addSection(len(prefix), m.group(2))
+            else:
+                self.addClause(m.group(1).strip(), m.group(2).strip())
+        self._flush_clause()
+
+    def addAmmendent(self, text:str):
+        print(text)
+
+    def parse_amendments(self, content: str):
+        lines = content.split('\n')
+        
+        self.data_lines=[]
+        self.section_levels = [self._id()]
+        self.current_pid = self._parent_id()
+        self.last_number = None
+        self.level_counters = [0] * 6
+
+        isCodeBlock = False
+        for line in lines:
+
+            m = re.match(r'^(#{1,6}|\d+\.|[а-я]\)) (.+)', line)
+            if m is None or isCodeBlock:
+                line = line.strip()
+                if line.startswith("```"):
+                    isCodeBlock = not isCodeBlock
+                self.data_lines.append(line)
+                continue
+            prefix = m.group(1)
+            if prefix.startswith("#"):
+                self.addSection(len(prefix), m.group(2))
+            else:
+                self.addClause(m.group(1).strip(), m.group(2).strip())
+        self._flush_clause()
 
     def parse_base_methodology(self, content: str, filename: str, parent_order_id: str, valid_from: str):
         """Парсит основную методику: разделы (I., II.) -> пункты (1., 2., 10а)"""
@@ -265,42 +391,42 @@ class NormativeGraphBuilder:
                     formulas=[f.strip() for f in formulas] if formulas else None
                 )
 
-    def parse_amendments(self, content: str, filename: str, base_order_id: str, valid_from: str):
-        amend_doc_id = f"{base_order_id}_amend_{self._clean_id(valid_from)}"
-        self._add_node(
-            id=amend_doc_id, type="amendment_order", title="Текст изменений",
-            parent_id=None, valid_from=valid_from, valid_to=None, source_file=filename,
-            meta={"amends_doc": base_order_id}
-        )
+    # def parse_amendments(self, content: str, filename: str, base_order_id: str, valid_from: str):
+    #     amend_doc_id = f"{base_order_id}_amend_{self._clean_id(valid_from)}"
+    #     self._add_node(
+    #         id=amend_doc_id, type="amendment_order", title="Текст изменений",
+    #         parent_id=None, valid_from=valid_from, valid_to=None, source_file=filename,
+    #         meta={"amends_doc": base_order_id}
+    #     )
 
-        # Устойчивые паттерны, игнорирующие артефакты OCR: «», "", >», ., \n
-        patterns = [
-            # Пункт X изложить в следующей редакции: «...»
-            (r'Пункт\s+([^\s:;,]+)\s+изложить\s+в\s+следующей\s+редакции[:\s]+[«""]?\s*(.*?)(?=\s*>?\s*[»""][\.\s]*(?:\n|$))', 'replace'),
-            # В пункте X слова ... заменить словами ...
-            (r'В пункте\s+([^\s:;,]+)\s+слова\s+[«""]?(.*?)[»""]?\s+заменить\s+словами\s+[«""]?(.*?)[»""]?', 'modify'),
-            # Дополнить пунктом X следующего содержания: ...
-            (r'Дополнить\s+пунктом\s+([^\s:;,]+)\s+следующего\s+содержания[:\s]+(.*?)(?=\n\s*(?:Дополнить|В пункте|Пункт|Абзац|Примечание)|\Z)', 'add'),
-            # Абзац ... пункта X изложить в следующей редакции: ...
-            (r'Абзац\s+(.+?)\s+пункта\s+([^\s:;,]+)\s+изложить\s+в\s+следующей\s+редакции[:\s]+[«""]?\s*(.*?)(?=\s*>?\s*[»""][\.\s]*(?:\n|$))', 'modify_paragraph')
-        ]
+    #     # Устойчивые паттерны, игнорирующие артефакты OCR: «», "", >», ., \n
+    #     patterns = [
+    #         # Пункт X изложить в следующей редакции: «...»
+    #         (r'Пункт\s+([^\s:;,]+)\s+изложить\s+в\s+следующей\s+редакции[:\s]+[«""]?\s*(.*?)(?=\s*>?\s*[»""][\.\s]*(?:\n|$))', 'replace'),
+    #         # В пункте X слова ... заменить словами ...
+    #         (r'В пункте\s+([^\s:;,]+)\s+слова\s+[«""]?(.*?)[»""]?\s+заменить\s+словами\s+[«""]?(.*?)[»""]?', 'modify'),
+    #         # Дополнить пунктом X следующего содержания: ...
+    #         (r'Дополнить\s+пунктом\s+([^\s:;,]+)\s+следующего\s+содержания[:\s]+(.*?)(?=\n\s*(?:Дополнить|В пункте|Пункт|Абзац|Примечание)|\Z)', 'add'),
+    #         # Абзац ... пункта X изложить в следующей редакции: ...
+    #         (r'Абзац\s+(.+?)\s+пункта\s+([^\s:;,]+)\s+изложить\s+в\s+следующей\s+редакции[:\s]+[«""]?\s*(.*?)(?=\s*>?\s*[»""][\.\s]*(?:\n|$))', 'modify_paragraph')
+    #     ]
 
-        for pattern, change_type in patterns:
-            for m in re.finditer(pattern, content, re.IGNORECASE | re.DOTALL):
-                groups = m.groups()
-                if change_type == 'modify':
-                    target, old, new = groups[0].strip(), groups[1].strip(), groups[2].strip()
-                else:
-                    target = groups[0].strip()
-                    new = groups[1].strip() if len(groups) > 1 else ""
+    #     for pattern, change_type in patterns:
+    #         for m in re.finditer(pattern, content, re.IGNORECASE | re.DOTALL):
+    #             groups = m.groups()
+    #             if change_type == 'modify':
+    #                 target, old, new = groups[0].strip(), groups[1].strip(), groups[2].strip()
+    #             else:
+    #                 target = groups[0].strip()
+    #                 new = groups[1].strip() if len(groups) > 1 else ""
 
-                c_id = f"{amend_doc_id}::clause::{self._clean_id(target)}"
-                self._add_node(
-                    id=c_id, type="clause", clause_num=target, text=new,
-                    parent_id=amend_doc_id, valid_from=valid_from, valid_to=None, source_file=filename,
-                    change_status="active", change_type=change_type,
-                    amends_clause=f"{base_order_id}_data::clause::{target}"
-                )
+    #             c_id = f"{amend_doc_id}::clause::{self._clean_id(target)}"
+    #             self._add_node(
+    #                 id=c_id, type="clause", clause_num=target, text=new,
+    #                 parent_id=amend_doc_id, valid_from=valid_from, valid_to=None, source_file=filename,
+    #                 change_status="active", change_type=change_type,
+    #                 amends_clause=f"{base_order_id}_data::clause::{target}"
+    #             )
 
     def parse_appendix_form(self, content: str, filename: str, parent_data_id: str, valid_from: str):
         """Парсит приложение с таблицей/формой (извлекает структуру HTML/Markdown)"""
@@ -320,7 +446,7 @@ class NormativeGraphBuilder:
             valid_from=valid_from, valid_to=None, source_file=filename
         )
 
-    def run(self, document_set_id: str, domain: str, files_map: Dict[str, str]) -> Dict[str, Any]:
+    def run(self, document_set_id: str, domain: str, files_map: Dict[str, str]) -> Result:
         """
         files_map: {"20200804_421.md": "content...", "20200804_421_data.md": "...", ...}
         Возвращает готовый JSON
@@ -335,59 +461,17 @@ class NormativeGraphBuilder:
         for doc_name, content in files_map.items():
             self.parse_filename(doc_name)
             self.parse_content(content)
-        return {
-            "metadata": self.doc.to_dict(),
-            "stats": {
+        return Result (
+            metadata=self.doc,
+            stats= {
                 "total_nodes": len(self.nodes),
-                "types": {k: sum(1 for n in self.nodes if n["type"]==k) for k in set(n["type"] for n in self.nodes)}
+                "types": {k: sum(1 for n in self.nodes if n.type==k) for k in set(n.type for n in self.nodes)}
             },
-            "nodes": self.nodes
-        }
-
-
-
-        # # 1. Приказ 421
-        # base_order_id = self.parse_order(files_map.get("20200804_421.md", ""), "20200804_421.md")
-        # base_valid = "2020-09-28"
-        # self.parse_base_methodology(files_map.get("20200804_421_data.md", ""), "20200804_421_data.md", base_order_id, base_valid)
-        # self.parse_appendix_form(files_map.get("20200804_421_data_add-1.md", ""), "20200804_421_data_add-1.md", f"{base_order_id}_data", base_valid)
-
-        # # 2. Приказ 557 (Изменение)
-        # amend_order_id = self.parse_order(files_map.get("20200707_557_421.md", ""), "20200707_557_421.md")
-        # amend_valid = "2022-08-31"
-        # self.parse_amendments(files_map.get("20200707_557_421_add.md", ""), "20200707_557_421_add.md", base_order_id, amend_valid)
-
-        # # Проставляем valid_to для устаревших пунктов (эвристика: все пункты до amend_valid становятся неактивны)
-        # for node in self.nodes:
-        #     if node.get("valid_to") is None and node.get("change_status") != "active" and node["valid_from"] < amend_valid:
-        #         # Если пункт был изменён в 557, ставим ему valid_to = 2022-08-30
-        #         if any(n.get("amends_clause") == node["id"] for n in self.nodes):
-        #             node["valid_to"] = "2022-08-30"
-        #             node["change_status"] = "superseded"
-
-        # return {
-        #     "metadata": {
-        #         "document_set_id": document_set_id,
-        #         "base_order": base_order_id,
-        #         "latest_amendment": amend_valid,
-        #         "domain": "estimating",
-        #         "generated_at": datetime.datetime.now().isoformat()
-        #     },
-        #     "stats": {
-        #         "total_nodes": len(self.nodes),
-        #         "types": {k: sum(1 for n in self.nodes if n["type"]==k) for k in set(n["type"] for n in self.nodes)}
-        #     },
-        #     "nodes": self.nodes
-        # }
+            nodes=self.nodes
+        )
 
 # 🚀 ЗАПУСК В COLAB / ЛОКАЛЬНО
-if __name__ == "__main__":
-    # Пример загрузки файлов (замените пути на реальные или используйте google.colab.files.upload())
-    # В Colab: from google.colab import files; uploaded = files.upload()
-    # Здесь используем заглушки для демонстрации структуры. В реальности подставьте ваши .md
-    
-    # 📥 Замените этот блок на чтение реальных файлов:
-    
+if __name__ == "__main__":    
     files_content = {}
     for fname in [
         "minstroy_20200804_pr_421.md", 
@@ -397,24 +481,14 @@ if __name__ == "__main__":
         with open(f"{Path.cwd()}/ai/practic/2/data/md/{fname}", "r", encoding="utf-8") as f:
             files_content[fname] = f.read()
             
-    # # Для демо создадим минимальные заглушки, чтобы скрипт отработал без ошибок:
-    # demo_files = {
-    #     "20200804_421.md": "# Свойства\nтип приказ\nномер 421/пр\nдата 04.08.2020\nОписание\nОб утверждении Методики...",
-    #     "20200804_421_data.md": "I.Общие положения\n1. Методика определяет единые методы...\n2. Положения применяются...\n$$ \\text{ОТ}_{\\text{тек}} = ... $$\nII.Состав сметной документации\n1. Разрабатываются расчеты...",
-    #     "20200707_557_421.md": "# Свойства\nномер 557/пр\nдата 07.07.2022\nОписание\nО внесении изменений в Методику 421...",
-    #     "20200707_557_421_add.md": "Пункт 5 изложить в следующей редакции: «5. В сметной стоимости учитываются затраты...».\nДополнить пунктом 52.1 следующего содержания: 52.1. При определении...",
-    #     "20200804_421_data_add-1.md": "<h4>Конъюнктурный анализ</h4><th>Код ресурса</th><th>Наименование</th>"
-    # }
-
     builder = NormativeGraphBuilder()
-    result_json = builder.run("metodika_421", "estimated", files_content)
-    
+    result = builder.run("metodika_421", "estimated", files_content)
     # Сохранение
     out_path = Path("data/json/metodika_421_graph.json")
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with open(out_path, "w", encoding="utf-8") as f:
-        json.dump(result_json, f, ensure_ascii=False, indent=2, default=str)
+        f.write(result.model_dump_json(exclude_none=True))
         
     print(f"✅ JSON сохранён: {out_path}")
-    print(f"📊 Статистика: {result_json['stats']}")
-    print(f"🔗 Пример узла (изменение):\n{json.dumps(next((n for n in result_json['nodes'] if n.get('change_type')), None), ensure_ascii=False, indent=2)}")
+    print(f"📊 Статистика: {result.stats}")
+    print(f"🔗 Пример узла (изменение):\n{next((n.model_dump_json for n in result.nodes), None)}")
